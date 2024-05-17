@@ -1,6 +1,11 @@
 #!/usr/bin/python3
 """ Console Module """
+import ast
 import cmd
+import re
+import shlex
+
+
 import sys
 from models.base_model import BaseModel
 from models.__init__ import storage
@@ -10,6 +15,39 @@ from models.state import State
 from models.city import City
 from models.amenity import Amenity
 from models.review import Review
+def split_curly_braces(e_arg):
+    """
+    Splits the curly braces for the update method
+    """
+    curly_braces = re.search(r"\{(.*?)\}", e_arg)
+
+    if curly_braces:
+        id_with_comma = shlex.split(e_arg[: curly_braces.span()[0]])
+        id = [i.strip(",") for i in id_with_comma][0]
+
+        str_data = curly_braces.group(1)
+        try:
+            arg_dict = ast.literal_eval("{" + str_data + "}")
+        except Exception:
+            print("**  invalid dictionary format **")
+            return
+        return id, arg_dict
+    else:
+        commands = e_arg.split(",")
+        if commands:
+            try:
+                id = commands[0]
+            except Exception:
+                return "", ""
+            try:
+                attr_name = commands[1]
+            except Exception:
+                return id, ""
+            try:
+                attr_value = commands[2]
+            except Exception:
+                return id, attr_name
+            return f"{id}", f"{attr_name} {attr_value}"
 
 
 class HBNBCommand(cmd.Cmd):
@@ -17,7 +55,7 @@ class HBNBCommand(cmd.Cmd):
 
     # determines prompt for interactive/non-interactive modes
     prompt = "(hbnb) " if sys.__stdin__.isatty() else ""
-
+    valid_classes = ["BaseModel", "User", "Amenity", "Place", "Review", "State", "City"]
     classes = {
         "BaseModel": BaseModel,
         "User": User,
@@ -27,7 +65,7 @@ class HBNBCommand(cmd.Cmd):
         "Amenity": Amenity,
         "Review": Review,
     }
-    dot_cmds = ["all", "count", "show", "destroy", "update"]
+    dot_cmds = ["all", "count", "show", "destroy", "update", "create"]
     types = {
         "number_rooms": int,
         "number_bathrooms": int,
@@ -81,8 +119,8 @@ class HBNBCommand(cmd.Cmd):
                 if pline:
                     # check for *args or **kwargs
                     if (
-                        pline[0] is "{"
-                        and pline[-1] is "}"
+                        pline[0] == "{"
+                        and pline[-1] == "}"
                         and type(eval(pline)) is dict
                     ):
                         _args = pline
@@ -123,18 +161,46 @@ class HBNBCommand(cmd.Cmd):
         """Overrides the emptyline method of CMD"""
         pass
 
-    def do_create(self, args):
-        """Create an object of any class"""
-        if not args:
-            print("** class name missing **")
+    def do_create(self, arg):
+        """
+        Create a new instance of BaseModel and save it to the JSON file.
+        Usage: create <class_name>
+        """
+        try:
+            class_name = arg.split(" ")[0]
+            if len(class_name) == 0:
+                print("** class name missing **")
+                return
+            if class_name and class_name not in self.valid_classes:
+                print("** class doesn't exist **")
+                return
+
+            kwargs = {}
+            commands = arg.split(" ")
+            for i in range(1, len(commands)):
+
+                key = commands[i].split("=")[0]
+                value = commands[i].split("=")[1]
+                if value.startswith('"'):
+                    value = value.strip('"').replace("_", " ")
+                else:
+                    try:
+                        value = eval(value)
+                    except (SyntaxError, NameError):
+                        continue
+                kwargs[key] = value
+
+            if kwargs == {}:
+                new_instance = eval(class_name)()
+            else:
+                new_instance = eval(class_name)(**kwargs)
+                print(new_instance)
+            storage.new(new_instance)
+            print(new_instance.id)
+            storage.save()
+        except ValueError:
+            print(ValueError)
             return
-        elif args not in HBNBCommand.classes:
-            print("** class doesn't exist **")
-            return
-        new_instance = HBNBCommand.classes[args]()
-        storage.save()
-        print(new_instance.id)
-        storage.save()
 
     def help_create(self):
         """Help information for the create method"""
@@ -282,7 +348,7 @@ class HBNBCommand(cmd.Cmd):
                 args.append(v)
         else:  # isolate args
             args = args[2]
-            if args and args[0] is '"':  # check for quoted arg
+            if args and args[0] == '"':  # check for quoted arg
                 second_quote = args.find('"', 1)
                 att_name = args[1:second_quote]
                 args = args[second_quote + 1 :]
@@ -290,10 +356,10 @@ class HBNBCommand(cmd.Cmd):
             args = args.partition(" ")
 
             # if att_name was not quoted arg
-            if not att_name and args[0] is not " ":
+            if not att_name and args[0] != " ":
                 att_name = args[0]
             # check for quoted val arg
-            if args[2] and args[2][0] is '"':
+            if args[2] and args[2][0] == '"':
                 att_val = args[2][1 : args[2].find('"', 1)]
 
             # if att_val was not quoted arg
@@ -329,6 +395,48 @@ class HBNBCommand(cmd.Cmd):
         """Help information for the update class"""
         print("Updates an object with new information")
         print("Usage: update <className> <id> <attName> <attVal>\n")
+
+    def default(self, arg):
+        """
+        Default behavior for cmd module when input is invalid
+        """
+        arg_list = arg.split(".")
+
+        cls_nm = arg_list[0]  # incoming class name
+
+        command = arg_list[1].split("(")
+
+        cmd_met = command[0]  # incoming command method
+
+        e_arg = command[1].split(")")[0]  # extra arguments
+
+        method_dict = {
+            "all": self.do_all,
+            "show": self.do_show,
+            "destroy": self.do_destroy,
+            "update": self.do_update,
+            "count": self.do_count,
+        }
+
+        if cmd_met in method_dict.keys():
+            if cmd_met != "update":
+                return method_dict[cmd_met]("{} {}".format(cls_nm, e_arg))
+            else:
+                if not cls_nm:
+                    print("** class name missing **")
+                    return
+                try:
+                    obj_id, arg_dict = split_curly_braces(e_arg)
+                except Exception:
+                    pass
+                try:
+                    call = method_dict[cmd_met]
+                    return call("{} {} {}".format(cls_nm, obj_id, arg_dict))
+                except Exception:
+                    pass
+        else:
+            print("*** Unknown syntax: {}".format(arg))
+            return False
 
 
 if __name__ == "__main__":
